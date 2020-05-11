@@ -15,6 +15,7 @@
 from keystoneauth1 import exceptions as ksa_exceptions
 from keystoneauth1 import loading
 from openstack import connection
+from openstack import exceptions as sdk_exceptions
 from oslo_config import cfg
 from oslo_log import log
 
@@ -46,6 +47,29 @@ def _get_keystone_connection():
             raise exception.SessionInitError(e)
 
     return _SDK_CONNECTION
+
+
+def _get_service_and_region():
+        connection = _get_keystone_connection()
+
+        endpoint_id = CONF.oslo_limit.endpoint_id
+        service_name = CONF.oslo_limit.service_name
+        region_name = CONF.oslo_limit.region_name
+        if endpoint_id:
+            try:
+                endpoint = connection.get_endpoint(endpoint_id)
+            except sdk_exceptions.ResourceNotFound:
+                raise ValueError("can't find endpoint for %s" % endpoint_id)
+            return (endpoint.service_id, endpoint.region_id)
+        elif service_name and region_name:
+            services = list(connection.services(name=service_name))
+            if len(services) != 1:
+                raise ValueError("%s service named %s, better use "
+                                 "endpoint_id in oslo_limit configuration"
+                                 % (len(services), service_name))
+            return (services.pop().id, region_name)
+        raise ValueError("No endpoint_id or service_name/region_name "
+                          "defined in oslo_limit configuration")
 
 
 class Enforcer(object):
@@ -175,12 +199,7 @@ class _EnforcerUtils(object):
         self.connection = _get_keystone_connection()
 
         # get and cache endpoint info
-        endpoint_id = CONF.oslo_limit.endpoint_id
-        self._endpoint = self.connection.get_endpoint(endpoint_id)
-        if not self._endpoint:
-            raise ValueError("can't find endpoint for %s" % endpoint_id)
-        self._service_id = self._endpoint.service_id
-        self._region_id = self._endpoint.region_id
+        self._service_id, self._region_id = _get_service_and_region()
 
     @staticmethod
     def enforce_limits(project_id, limits, current_usage, deltas):
